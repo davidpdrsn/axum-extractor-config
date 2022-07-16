@@ -44,4 +44,3 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
 pub mod via_extensions;
-pub mod via_types;

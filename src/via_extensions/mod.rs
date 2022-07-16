@@ -6,9 +6,11 @@ use std::sync::Arc;
 mod config;
 pub use config::Config;
 
+#[allow(dead_code)]
 type RejectionToResponseFn<T, B> =
     Option<Arc<dyn Fn(T, &axum::extract::RequestParts<B>) -> Response + Send + Sync>>;
 
+#[allow(unused_macros)]
 macro_rules! make_deserialize_wrapper {
     (
         $(#[$m:meta])*
