@@ -22,7 +22,10 @@ pub trait IntoResponseFromRejection<T, B> {
     type Response: IntoResponse;
 
     /// Create the response from a rejection.
-    async fn into_response_from_rejection(rejection: T, req: &mut RequestParts<B>) -> Self::Response;
+    async fn into_response_from_rejection(
+        rejection: T,
+        req: &mut RequestParts<B>,
+    ) -> Self::Response;
 }
 
 macro_rules! make_deserialize_wrapper {
