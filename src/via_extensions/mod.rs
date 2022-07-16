@@ -1,16 +1,22 @@
 //! Extractors that are configured via request extensions.
 
-use axum::response::Response;
+use axum::{
+    async_trait,
+    body::{Bytes, HttpBody},
+    extract::{FromRequest, RequestParts},
+    response::{IntoResponse, Response},
+    BoxError,
+};
+use serde::{de::DeserializeOwned, Serialize};
+use std::fmt;
 use std::sync::Arc;
 
 mod config;
 pub use config::Config;
 
-#[allow(dead_code)]
 type RejectionToResponseFn<T, B> =
     Option<Arc<dyn Fn(T, &axum::extract::RequestParts<B>) -> Response + Send + Sync>>;
 
-#[allow(unused_macros)]
 macro_rules! make_deserialize_wrapper {
     (
         $(#[$m:meta])*
@@ -62,65 +68,52 @@ macro_rules! make_deserialize_wrapper {
             }
         }
 
-        const _: () = {
-            use axum::{
-                async_trait,
-                body::{Bytes, HttpBody},
-                extract::{FromRequest, RequestParts},
-                response::{IntoResponse, Response},
-                BoxError,
-            };
-            use serde::de::DeserializeOwned;
-            use std::fmt;
+        #[async_trait]
+        impl<T, B> FromRequest<B> for $ident<T>
+        where
+            B: HttpBody<Data = Bytes> + Send + 'static,
+            B::Error: Into<BoxError>,
+            T: DeserializeOwned + Send,
+        {
+            type Rejection = Response;
 
-            #[async_trait]
-            impl<T, B> FromRequest<B> for $ident<T>
-            where
-                B: HttpBody<Data = Bytes> + Send + 'static,
-                B::Error: Into<BoxError>,
-                T: DeserializeOwned + Send,
-            {
-                type Rejection = Response;
+            async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
+                match req.extract::<axum::extract::$ident<T>>().await {
+                    Ok(axum::extract::$ident(value)) => Ok(Self(value)),
+                    Err(rejection) => {
+                        let config =
+                            req.extract::<Config<$config<B>, B>>()
+                                .await
+                                .unwrap_or_default()
+                                .into_inner();
 
-                async fn from_request(req: &mut RequestParts<B>) -> Result<Self, Self::Rejection> {
-                    match req.extract::<axum::extract::$ident<T>>().await {
-                        Ok(axum::extract::$ident(value)) => Ok(Self(value)),
-                        Err(rejection) => {
-                            let config =
-                                req.extract::<Config<$config<B>, B>>()
-                                    .await
-                                    .unwrap_or_default()
-                                    .into_inner();
-
-                            if let Some(rejection_handler) = &config.rejection_handler {
-                                Err(rejection_handler(rejection, req))
-                            } else {
-                                Err(rejection.into_response())
-                            }
+                        if let Some(rejection_handler) = &config.rejection_handler {
+                            Err(rejection_handler(rejection, req))
+                        } else {
+                            Err(rejection.into_response())
                         }
                     }
                 }
             }
+        }
 
-            impl<B> fmt::Debug for $config<B> {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                    f.debug_struct(stringify!($config)).finish()
-                }
+        impl<B> fmt::Debug for $config<B> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_struct(stringify!($config)).finish()
             }
+        }
 
-            impl<S, B> tower_layer::Layer<S> for $config<B> {
-                type Service = <Config<Self, B> as tower_layer::Layer<S>>::Service;
+        impl<S, B> tower_layer::Layer<S> for $config<B> {
+            type Service = <Config<Self, B> as tower_layer::Layer<S>>::Service;
 
-                fn layer(&self, inner: S) -> Self::Service {
-                    let config: Config::<_, B> = Config::new(self.clone());
-                    config.layer(inner)
-                }
+            fn layer(&self, inner: S) -> Self::Service {
+                let config: Config::<_, B> = Config::new(self.clone());
+                config.layer(inner)
             }
-        };
+        }
     };
 }
 
-#[cfg(feature = "json")]
 make_deserialize_wrapper! {
     /// Extractor that wraps `axum::extract::Json` and supports runtime configuration.
     ///
@@ -167,17 +160,15 @@ make_deserialize_wrapper! {
     JsonConfig,
 }
 
-#[cfg(feature = "json")]
-impl<T> axum::response::IntoResponse for Json<T>
+impl<T> IntoResponse for Json<T>
 where
-    T: serde::Serialize,
+    T: Serialize,
 {
-    fn into_response(self) -> axum::response::Response {
+    fn into_response(self) -> Response {
         axum::Json(self.0).into_response()
     }
 }
 
-#[cfg(feature = "query")]
 make_deserialize_wrapper! {
     /// Extractor that wraps `axum::extract::Query` and supports runtime configuration.
     ///
@@ -209,7 +200,7 @@ make_deserialize_wrapper! {
     /// }
     ///
     /// #[axum::debug_handler]
-    /// async fn handler(Query(payload): Query<Pagination>) {}
+    /// async fn handler(Query(pagination): Query<Pagination>) {}
     ///
     /// fn rejection_handler<B>(rejection: QueryRejection, req: &RequestParts<B>) -> (StatusCode, Json<Value>) {
     ///     (
@@ -228,7 +219,6 @@ make_deserialize_wrapper! {
     QueryConfig,
 }
 
-#[cfg(feature = "form")]
 make_deserialize_wrapper! {
     /// Extractor that wraps `axum::extract::Form` and supports runtime configuration.
     ///
@@ -276,20 +266,17 @@ make_deserialize_wrapper! {
     FormConfig,
 }
 
-#[cfg(feature = "form")]
-impl<T> axum::response::IntoResponse for Form<T>
+impl<T> IntoResponse for Form<T>
 where
-    T: serde::Serialize,
+    T: Serialize,
 {
-    fn into_response(self) -> axum::response::Response {
+    fn into_response(self) -> Response {
         axum::Form(self.0).into_response()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::error::Error;
-
     use super::*;
     use axum::{
         body::Body,
@@ -301,6 +288,7 @@ mod tests {
     };
     use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
+    use std::error::Error;
     use tower::Service;
 
     #[derive(Deserialize)]

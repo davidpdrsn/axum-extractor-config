@@ -1,4 +1,4 @@
-//! Extractors for axum that support runtime configuration.
+//! Extractors for axum that supports configuration.
 //!
 //! This primarily explores a possible solution to <https://github.com/tokio-rs/axum/issues/1116>.
 
@@ -44,3 +44,4 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
 pub mod via_extensions;
+pub mod via_types;
